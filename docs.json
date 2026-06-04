@@ -3,9 +3,9 @@
   "theme": "mint",
   "name": "Panori Bundles",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#D8DF70",
+    "light": "#F3FF3B",
+    "dark": "#9da800"
   },
   "favicon": "/favicon.svg",
   "navigation": {
@@ -29,7 +29,7 @@
       "anchors": [
         {
           "anchor": "Support",
-          "href": "mailto:support@panori.io",
+          "href": "mailto:support@panori.de",
           "icon": "envelope"
         }
       ]
@@ -43,7 +43,7 @@
     "links": [
       {
         "label": "Support",
-        "href": "mailto:support@panori.io"
+        "href": "mailto:support@panori.de"
       }
     ]
   },
