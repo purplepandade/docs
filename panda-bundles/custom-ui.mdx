@@ -1,6 +1,6 @@
 ---
 title: "Custom UI with Liquid"
-description: "Build your own bundle UI in Liquid using Panda Bundles' public metafields (Pro plan)."
+description: "Build your own bundle UI in Liquid using Panori Bundles' public metafields (Pro plan)."
 ---
 
 <Info>
@@ -9,7 +9,7 @@ description: "Build your own bundle UI in Liquid using Panda Bundles' public met
 
 ## Overview
 
-On the Pro plan, Panda Bundles writes the bundle configuration into a **public metafield namespace** (`panda_bundles`) on every mother variant. This lets you build a fully custom bundle picker directly in your theme's Liquid — no Theme App Extension block required.
+On the Pro plan, Panori Bundles writes the bundle configuration into a **public metafield namespace** (`panda_bundles`) on every mother variant. This lets you build a fully custom bundle picker directly in your theme's Liquid — no Theme App Extension block required.
 
 ---
 
@@ -17,9 +17,13 @@ On the Pro plan, Panda Bundles writes the bundle configuration into a **public m
 
 Each mother variant gets a metafield with the full bundle configuration for that variant.
 
-| Scope | Namespace | Key | Type |
-|-------|-----------|-----|------|
-| Product Variant | `panda_bundles` | `bundle_config` | `json` |
+| Scope | Namespace | Key | Type | Liquid accessor |
+|-------|-----------|-----|------|-----------------|
+| Product | `panda_bundles` | `config` | `json` | `product.metafields.panda_bundles.config` |
+| Mother Variant | `panda_bundles` | `bundle_config` | `json` | `variant.metafields.panda_bundles.bundle_config` |
+| Mother Variant | `panda_bundles` | `child_variants` | `list.variant_reference` | `variant.metafields.panda_bundles.child_variants` |
+
+`child_variants` is a `list.variant_reference` — Shopify resolves each entry to a full variant object in Liquid, giving you live access to `.price`, `.title`, `.image`, `.available`, and all other variant properties.
 
 ### Data structure
 
@@ -58,13 +62,16 @@ Each mother variant gets a metafield with the full bundle configuration for that
 
 ## Building the UI in Liquid
 
-Loop over the product's variants, check which ones have a bundle config, and render the steps.
+Use `bundle_config` for step structure and `child_variants` for live variant data. Combine them by matching `variantId` from the config against the resolved variant objects.
 
 ```liquid
 {% for variant in product.variants %}
-  {% assign bundle = variant.metafields.panda_bundles.bundle_config.value %}
+  {% assign bundle_configs = variant.metafields.panda_bundles.bundle_config.value %}
+  {% assign child_variants = variant.metafields.panda_bundles.child_variants.value %}
 
-  {% if bundle != blank %}
+  {% if bundle_configs != blank %}
+    {% assign bundle = bundle_configs[0] %}
+
     <div data-bundle-variant="{{ variant.id }}">
 
       {% for step in bundle.steps %}
@@ -72,7 +79,19 @@ Loop over the product's variants, check which ones have a bundle config, and ren
           <p><strong>{{ step.label }}</strong></p>
 
           {% for cv in step.childVariants %}
-            {% if cv.available %}
+            {%- comment -%}
+              Look up the live variant object from child_variants by matching the GID.
+              This gives us live price, title, image and availableForSale.
+            {%- endcomment -%}
+            {% assign live_variant = nil %}
+            {% for v in child_variants %}
+              {% if v.id == cv.variantId %}
+                {% assign live_variant = v %}
+                {% break %}
+              {% endif %}
+            {% endfor %}
+
+            {% if live_variant.available %}
               <label>
                 <input
                   type="checkbox"
@@ -80,14 +99,15 @@ Loop over the product's variants, check which ones have a bundle config, and ren
                   data-variant-id="{{ cv.variantId }}"
                   data-max="{{ step.maxVariants | default: 99 }}"
                 />
-                {% if cv.imageUrl != blank %}
-                  <img src="{{ cv.imageUrl }}" width="48" height="48" loading="lazy" />
+                {% if live_variant.image %}
+                  {{ live_variant.image | image_url: width: 96 | image_tag: loading: 'lazy', width: 48, height: 48 }}
                 {% endif %}
-                {{ cv.price | money }}
+                <span>{{ live_variant.title }}</span>
+                <span>{{ live_variant.price | money }}</span>
               </label>
             {% endif %}
-          {% endfor %}
 
+          {% endfor %}
         </div>
       {% endfor %}
 
@@ -95,6 +115,10 @@ Loop over the product's variants, check which ones have a bundle config, and ren
   {% endif %}
 {% endfor %}
 ```
+
+<Note>
+  `child_variants` is a `list.variant_reference` — Shopify resolves it to actual variant objects at render time. Prices, availability, and images are always live. You do not need to manage staleness.
+</Note>
 
 ---
 
@@ -113,12 +137,13 @@ When the customer confirms their selection, you must POST to `/cart/add.js` with
     const bundleInstanceId = crypto.randomUUID();
 
     // bundle = variant.metafields.panda_bundles.bundle_config (from a data attribute or API)
+    // getSelections(stepId) returns [{ variantId: "gid://...", quantity: 1 }]
     const payload = JSON.stringify({
       bundleId: bundle.bundleId,
       motherVariantId: "gid://shopify/ProductVariant/MOTHER_ID",
       steps: bundle.steps.map((step) => ({
         stepId: step.id,
-        selectedVariantIds: getSelections(step.id), // your UI state
+        selectedVariants: getSelections(step.id),
       })),
     });
     ```
@@ -127,13 +152,12 @@ When the customer confirms their selection, you must POST to `/cart/add.js` with
     Add each selected child variant as a separate line item. Attach `_bundle_config_json` to the **first item only**, and `_bundle_id` to **all items**.
 
     ```js
-    const allSelectedVariantIds = bundle.steps.flatMap((step) =>
-      getSelections(step.id)
-    );
+    // getSelections returns [{ variantId, quantity }] — quantity can be > 1 for the same variant
+    const allSelections = bundle.steps.flatMap((step) => getSelections(step.id));
 
-    const items = allSelectedVariantIds.map((variantId, idx) => ({
+    const items = allSelections.map(({ variantId, quantity }, idx) => ({
       id: numericId(variantId), // strip the GID prefix
-      quantity: 1,
+      quantity,
       properties: {
         _bundle_id: bundleInstanceId,
         ...(idx === 0 ? { _bundle_config_json: payload } : {}),
@@ -158,10 +182,10 @@ When the customer confirms their selection, you must POST to `/cart/add.js` with
 ## Server-side Validation
 
 <Warning>
-  Do **not** include `discount`, `isGift`, `maxVariants`, or `allowedVariantIds` in the `_bundle_config_json` payload. These fields are **ignored** — Panda Bundles reads them exclusively from the server-side metafield.
+  Do **not** include `discount`, `isGift`, `maxVariants`, or `allowedVariantIds` in the `_bundle_config_json` payload. These fields are **ignored** — Panori Bundles reads them exclusively from the server-side metafield.
 </Warning>
 
-When the cart is processed, the Panda Bundles cart transform function validates every bundle instance against the saved configuration:
+When the cart is processed, the Panori Bundles cart transform function validates every bundle instance against the saved configuration:
 
 | Check | What is validated |
 |-------|-------------------|
@@ -169,7 +193,7 @@ When the cart is processed, the Panda Bundles cart transform function validates 
 | **Mother variant** | `motherVariantId` must belong to that bundle |
 | **Step exists** | Every `stepId` must exist on the server-side mother variant |
 | **Allowed variants** | Each `selectedVariantId` must be in that step's `childVariants` list |
-| **Max selections** | `selectedVariantIds.length` must not exceed `maxVariants` |
-| **Quantity** | Every child cart line must have `quantity: 1` |
+| **Max selections** | Sum of all `quantity` values in a step must not exceed `maxVariants` |
+| **Quantity** | Each cart line's `quantity` must exactly match the declared `quantity` in `selectedVariants` |
 
 If any check fails, the bundle is not merged and the items remain as separate, full-price lines in the cart.
