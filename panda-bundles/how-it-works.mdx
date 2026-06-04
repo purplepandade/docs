@@ -1,113 +1,42 @@
 ---
 title: "How It Works"
-description: "Architecture, metafield strategy, cart transform function, and security model."
+description: "A technical overview of how Panori Bundles integrates with Shopify."
 ---
 
-Panori Bundles is built entirely on native Shopify primitives — no external database, no webhooks, no sync jobs.
+Panori Bundles is built entirely on native Shopify primitives — no external database, no webhooks, no sync jobs. Everything runs inside your store.
 
-## Architecture Overview
+## Storage
 
-```
-Shopify Admin App (React Router + Polaris)
-        │
-        ▼
-  metafieldsSet mutation
-        │
-        ├─▶ Shop Metafield  ($app:bundles/config)       ← Cart Transform Function
-        └─▶ Variant Metafields (per mother variant)
-               ├─ $app:bundles/bundle_refs              ← internal back-reference
-               ├─ panda_bundles/bundle_config           ← public, readable in Liquid
-               └─ panda_bundles/child_variants          ← public list.variant_reference
-```
+Bundle configurations are stored as **Shopify Metafields** directly on your shop and on the relevant product variants. This means your bundle data lives natively in Shopify, is always in sync, and requires no external service to stay up to date.
 
----
-
-## Metafield Strategy
-
-Bundle data lives in two layers.
-
-### 1. Shop-level (app-owned)
-
-| Namespace | Key | Type | Purpose |
-|-----------|-----|------|---------|
-| `$app:bundles` | `config` | `json` | All bundle definitions — read by the Cart Transform Function |
-| `$app:bundles` | `plan_active` | `boolean` | Gates the cart function; `true` when a paid plan is active |
-
-The `$app:bundles` namespace is app-owned — only this app can read or write it. It is never accessible from Liquid or the Storefront API.
-
-### 2. Variant-level (per mother variant)
-
-| Namespace | Key | Type | Purpose |
-|-----------|-----|------|---------|
-| `$app:bundles` | `bundle_refs` | `json` | Internal back-references: all bundles this variant belongs to |
-| `panda_bundles` | `bundle_config` | `json` | Public: full step structure + discount, readable in Liquid |
-| `panda_bundles` | `child_variants` | `list.variant_reference` | Public: Shopify resolves these to live variant objects in Liquid |
-
-The public `panda_bundles` namespace powers the [Custom UI with Liquid](/panda-bundles/custom-ui) feature (Pro plan).
-
----
+When you save a bundle in the app, the configuration is written to the appropriate metafields automatically. No manual sync needed.
 
 ## Cart Transform Function
 
-Panori Bundles ships a **Shopify Functions Cart Transform** that runs server-side during checkout. It:
+Discounts and bundle grouping are applied by a **Shopify Functions Cart Transform**, which runs server-side during checkout — inside Shopify's infrastructure, not on an external server.
 
-1. Reads the `_bundle_config_json` line item property from the mother variant's cart line
-2. Validates the bundle instance against the server-side `$app:bundles/config` metafield
-3. Applies discounts and groups child lines into a bundle
+When a customer adds a configured bundle to the cart, the function:
 
-The function is a no-op when `$app:bundles/plan_active` is `false`.
+1. Reads the bundle selection from the cart
+2. Validates it against the saved server-side configuration
+3. Groups the selected items and applies the configured discount
 
-### Validation checks
-
-| Check | What is validated |
-|-------|-------------------|
-| **Bundle exists** | `bundleId` must match a known bundle in the shop config |
-| **Mother variant** | `motherVariantId` must be registered for that bundle |
-| **Step exists** | Every `stepId` must exist in the server-side config |
-| **Allowed variants** | Each selected variant must be in that step's `childVariants` allow-list |
-| **Max selections** | Sum of all `quantity` values in a step must not exceed `maxVariants` |
-| **Quantity** | Each cart line's `quantity` must exactly match the declared `quantity` in `selectedVariants` |
-
-If any check fails, the bundle is not merged and the items remain as separate, full-price lines in the cart.
-
----
-
-## Security Model
-
-The client sends only minimal, untrusted data in `_bundle_config_json`:
-
-```json
-{
-  "bundleId": "...",
-  "motherVariantId": "gid://shopify/ProductVariant/123",
-  "steps": [
-    {
-      "stepId": "...",
-      "selectedVariants": [
-        { "variantId": "gid://shopify/ProductVariant/456", "quantity": 1 },
-        { "variantId": "gid://shopify/ProductVariant/789", "quantity": 2 }
-      ]
-    }
-  ]
-}
-```
-
-All security-relevant values — `discount`, `isGift`, `maxVariants`, `allowedVariantIds` — are read **exclusively from the server-side metafield**. Client-supplied values for these fields are ignored entirely.
-
----
+Because the function runs server-side and validates against your saved configuration, customers cannot manipulate prices or bypass bundle rules from the browser.
 
 ## Plan Gate
 
-The `$app:bundles/plan_active` shop metafield acts as a kill switch. `selectPlan` sets it to `true`; `cancelPlan` sets it to `false`. This ensures the cart function is inert when no active plan exists.
+The cart transform function only activates when your store has an active Panori Bundles plan. Without an active plan, the function is a no-op and the cart is left unchanged.
 
----
+## Data Flow
 
-## Data Flow on Save
+```
+You save a bundle in the app
+        │
+        ▼
+Configuration written to Shopify Metafields
+        │
+        ├─▶ Used by the Cart Transform Function at checkout
+        └─▶ Available on product variants for storefront display (Pro plan)
+```
 
-When you click **Save** in the app:
-
-1. All bundle definitions are written to `$app:bundles/config` — the single source of truth for the cart function.
-2. For each affected mother variant:
-   - `$app:bundles/bundle_refs` is updated with back-references to all bundles the variant belongs to.
-   - `panda_bundles/bundle_config` is written with the public-facing step + discount data.
-   - `panda_bundles/child_variants` is written as a `list.variant_reference` covering all child variants across all steps.
+The storefront metafields (Pro plan) let you read bundle data directly in Liquid to build a custom bundle UI — see [Custom UI with Liquid](/panda-bundles/custom-ui).
