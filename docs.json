@@ -11,15 +11,10 @@
   "navigation": {
     "pages": [
       {
-        "group": "Getting Started",
-        "pages": [
-          "index",
-          "quickstart"
-        ]
-      },
-      {
         "group": "Panori Bundles",
         "pages": [
+          "index",
+          "quickstart",
           "panda-bundles/how-it-works",
           "panda-bundles/custom-ui"
         ]
@@ -48,11 +43,6 @@
     ]
   },
   "contextual": {
-    "options": [
-      "copy",
-      "view",
-      "chatgpt",
-      "claude"
-    ]
+    "options": ["copy", "view", "chatgpt", "claude"]
   }
 }
