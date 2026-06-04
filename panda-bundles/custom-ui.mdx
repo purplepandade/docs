@@ -1,0 +1,175 @@
+---
+title: "Custom UI with Liquid"
+description: "Build your own bundle UI in Liquid using Panda Bundles' public metafields (Pro plan)."
+---
+
+<Info>
+  This feature is available on the **Pro plan** only. The public metafields are written and kept in sync automatically whenever you save a bundle in the app.
+</Info>
+
+## Overview
+
+On the Pro plan, Panda Bundles writes the bundle configuration into a **public metafield namespace** (`panda_bundles`) on every mother variant. This lets you build a fully custom bundle picker directly in your theme's Liquid — no Theme App Extension block required.
+
+---
+
+## Available Metafields
+
+Each mother variant gets a metafield with the full bundle configuration for that variant.
+
+| Scope | Namespace | Key | Type |
+|-------|-----------|-----|------|
+| Product Variant | `panda_bundles` | `bundle_config` | `json` |
+
+### Data structure
+
+```json
+{
+  "bundleId": "a1b2c3d4-...",
+  "steps": [
+    {
+      "id": "step-uuid",
+      "label": "Choose your base",
+      "maxVariants": 1,
+      "isGift": false,
+      "childVariants": [
+        {
+          "variantId": "gid://shopify/ProductVariant/111",
+          "productId": "gid://shopify/Product/222",
+          "price": "29.99",
+          "available": true,
+          "imageUrl": "https://cdn.shopify.com/..."
+        }
+      ]
+    }
+  ],
+  "discount": {
+    "type": "percentage",
+    "value": 10
+  }
+}
+```
+
+<Note>
+  `discount.type` can be `"percentage"`, `"fixed"`, or `"custom"`. For `"custom"`, the price lives directly on the Shopify variant — no calculation needed.
+</Note>
+
+---
+
+## Building the UI in Liquid
+
+Loop over the product's variants, check which ones have a bundle config, and render the steps.
+
+```liquid
+{% for variant in product.variants %}
+  {% assign bundle = variant.metafields.panda_bundles.bundle_config.value %}
+
+  {% if bundle != blank %}
+    <div data-bundle-variant="{{ variant.id }}">
+
+      {% for step in bundle.steps %}
+        <div data-step-id="{{ step.id }}">
+          <p><strong>{{ step.label }}</strong></p>
+
+          {% for cv in step.childVariants %}
+            {% if cv.available %}
+              <label>
+                <input
+                  type="checkbox"
+                  data-step-id="{{ step.id }}"
+                  data-variant-id="{{ cv.variantId }}"
+                  data-max="{{ step.maxVariants | default: 99 }}"
+                />
+                {% if cv.imageUrl != blank %}
+                  <img src="{{ cv.imageUrl }}" width="48" height="48" loading="lazy" />
+                {% endif %}
+                {{ cv.price | money }}
+              </label>
+            {% endif %}
+          {% endfor %}
+
+        </div>
+      {% endfor %}
+
+    </div>
+  {% endif %}
+{% endfor %}
+```
+
+---
+
+## Submitting the Bundle to Cart
+
+When the customer confirms their selection, you must POST to `/cart/add.js` with the selected variants **plus a `_bundle_config_json` property** on the first line item and a shared `_bundle_id` across all items.
+
+<Steps>
+  <Step title="Collect selections">
+    Gather the selected `variantId` per step from your UI state.
+  </Step>
+  <Step title="Build the payload">
+    Construct the `_bundle_config_json` from the bundle metafield and the customer's selections.
+
+    ```js
+    const bundleInstanceId = crypto.randomUUID();
+
+    // bundle = variant.metafields.panda_bundles.bundle_config (from a data attribute or API)
+    const payload = JSON.stringify({
+      bundleId: bundle.bundleId,
+      motherVariantId: "gid://shopify/ProductVariant/MOTHER_ID",
+      steps: bundle.steps.map((step) => ({
+        stepId: step.id,
+        selectedVariantIds: getSelections(step.id), // your UI state
+      })),
+    });
+    ```
+  </Step>
+  <Step title="POST to /cart/add.js">
+    Add each selected child variant as a separate line item. Attach `_bundle_config_json` to the **first item only**, and `_bundle_id` to **all items**.
+
+    ```js
+    const allSelectedVariantIds = bundle.steps.flatMap((step) =>
+      getSelections(step.id)
+    );
+
+    const items = allSelectedVariantIds.map((variantId, idx) => ({
+      id: numericId(variantId), // strip the GID prefix
+      quantity: 1,
+      properties: {
+        _bundle_id: bundleInstanceId,
+        ...(idx === 0 ? { _bundle_config_json: payload } : {}),
+      },
+    }));
+
+    await fetch("/cart/add.js", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items }),
+    });
+
+    function numericId(gid) {
+      return gid.split("/").at(-1);
+    }
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Server-side Validation
+
+<Warning>
+  Do **not** include `discount`, `isGift`, `maxVariants`, or `allowedVariantIds` in the `_bundle_config_json` payload. These fields are **ignored** — Panda Bundles reads them exclusively from the server-side metafield.
+</Warning>
+
+When the cart is processed, the Panda Bundles cart transform function validates every bundle instance against the saved configuration:
+
+| Check | What is validated |
+|-------|-------------------|
+| **Bundle exists** | `bundleId` must match a known bundle in the shop config |
+| **Mother variant** | `motherVariantId` must belong to that bundle |
+| **Step exists** | Every `stepId` must exist on the server-side mother variant |
+| **Allowed variants** | Each `selectedVariantId` must be in that step's `childVariants` list |
+| **Max selections** | `selectedVariantIds.length` must not exceed `maxVariants` |
+| **Quantity** | Every child cart line must have `quantity: 1` |
+
+If any check fails, the bundle is not merged and the items remain as separate, full-price lines in the cart.

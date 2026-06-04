@@ -16,6 +16,12 @@
           "index",
           "quickstart"
         ]
+      },
+      {
+        "group": "Panda Bundles",
+        "pages": [
+          "panda-bundles/custom-ui"
+        ]
       }
     ],
     "global": {
